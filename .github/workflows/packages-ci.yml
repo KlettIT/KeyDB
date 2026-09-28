@@ -30,7 +30,13 @@ jobs:
           sudo apt-get install -y build-essential nasm autoconf automake \
             libjemalloc-dev tcl tcl-dev uuid-dev libcurl4-openssl-dev \
             libbz2-dev libzstd-dev liblz4-dev libsnappy-dev libssl-dev \
-            pkg-config libgflags-dev libgoogle-glog-dev
+            pkg-config libgflags-dev libgoogle-glog-dev zlib1g-dev
+          # Patch RocksDB for GCC 13+ (missing <cstdint> include)
+          for f in deps/rocksdb/table/block_based/data_block_hash_index.h; do
+            if ! grep -q '#include <cstdint>' "$f" 2>/dev/null; then
+              sed -i '1i #include <cstdint>' "$f"
+            fi
+          done
           make -j"$(nproc)" BUILD_TLS=yes ENABLE_FLASH=yes
           cd src
           strip keydb-cli keydb-benchmark keydb-check-rdb keydb-check-aof \
