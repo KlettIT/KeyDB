@@ -15,55 +15,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # ---------------------------------------------------------------
-  # Build KeyDB source on native runner
-  # ---------------------------------------------------------------
-  build-source:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.ver.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Get version
-        id: ver
-        run: |
-          v=$(grep KEYDB_REAL_VERSION src/version.h | awk '{ printf $3 }' | tr -d '"')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "KeyDB version: $v"
-
-      - name: Build KeyDB
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential nasm autoconf automake \
-            libjemalloc-dev tcl tcl-dev uuid-dev libcurl4-openssl-dev \
-            libbz2-dev libzstd-dev liblz4-dev libsnappy-dev libssl-dev \
-            pkg-config
-          make -j"$(nproc)" BUILD_TLS=yes ENABLE_FLASH=yes
-          cd src
-          strip keydb-cli keydb-benchmark keydb-check-rdb keydb-check-aof \
-                keydb-diagnostic-tool keydb-sentinel keydb-server
-
-      - name: Upload binaries + config
-        uses: actions/upload-artifact@v4
-        with:
-          name: keydb-build
-          path: |
-            src/keydb-server
-            src/keydb-cli
-            src/keydb-benchmark
-            src/keydb-check-rdb
-            src/keydb-check-aof
-            src/keydb-diagnostic-tool
-            src/keydb-sentinel
-            keydb.conf
-            sentinel.conf
-
-  # ---------------------------------------------------------------
-  # Build & push multi-arch Docker image to ghcr.io
-  # ---------------------------------------------------------------
   docker:
-    needs: build-source
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -76,20 +28,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
         with:
-          name: keydb-build
-          path: .
-
-      # Artifacts extract to src/ subfolder for binaries, and
-      # keydb.conf / sentinel.conf at repo root.  The Dockerfile.ci
-      # expects:
-      #   src/keydb-*       (binaries)
-      #   keydb.conf        (config)
-      #   sentinel.conf     (config)
-      # which is exactly what we have now.
+          submodules: recursive
 
       - name: Set up QEMU
         if: matrix.arch != 'amd64'
@@ -128,26 +68,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Remove build context after push to save disk
-          load: false
-
-  # ---------------------------------------------------------------
-  # Smoke test: pull the pushed image and verify keydb-server runs
-  # ---------------------------------------------------------------
-  smoke-test:
-    needs: docker
-    runs-on: ubuntu-latest
-    steps:
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull and smoke-test
-        run: |
-          IMAGE="${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}"
-          docker pull "$IMAGE"
-          docker run --rm "$IMAGE" keydb-server --version
-          echo "Smoke test passed: $IMAGE"

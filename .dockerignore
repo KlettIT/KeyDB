@@ -1,0 +1,23 @@
+# Exclude non-build content from Docker context
+.git
+.github
+tests/
+machamp_scripts/
+monkey/
+fuzz/
+00-RELEASENOTES
+BUGS
+CONDUCT
+COPYING
+INSTALL
+README.md
+TLS.md
+ci.yaml
+build.yaml
+runtest
+runtest-cluster
+runtest-moduleapi
+runtest-rotation
+runtest-sentinel
+*.patch
+pr*.patch

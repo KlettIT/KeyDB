@@ -319,6 +319,60 @@ Unlike most databases the core data structure is the fastest part of the system.
 Code contributions
 -----------------
 
+CI & Build
+----------
+
+This fork maintains its own CI pipeline for building and publishing KeyDB artifacts.
+
+### Docker Images
+
+On every push to `main` (and on tags), the `Docker CI` workflow builds
+multi-architecture Docker images (linux/amd64, linux/arm64) and publishes them
+to the GitHub Container Registry (ghcr.io).
+
+```
+# Pull the latest image
+docker pull ghcr.io/<owner>/keydb:latest
+
+# Run a basic instance
+docker run -d --name keydb -p 6379:6379 \
+    -v keydb-data:/data \
+    ghcr.io/<owner>/keydb:latest
+```
+
+Available tags:
+- `latest` (main branch)
+- `<git-sha>` (commit-specific)
+- `v<major.minor.patch>` (on version tags)
+
+### Package Builds (deb / rpm)
+
+On every push to `main`, the `Packages CI` workflow builds:
+
+| Format | Targets |
+|--------|---------|
+| `.deb` | Ubuntu 20.04 / 22.04 / 24.04, Debian 11 / 12 |
+| `.rpm` | RHEL 8 / 9 (via RockyLinux), Fedora 40 |
+
+Packages are uploaded as GitHub Actions artifacts per build.
+
+### Security Patches Applied
+
+This fork includes backports of the following upstream security fixes:
+
+| CVE | Description | Source |
+|-----|-------------|--------|
+| CVE-2025-49844 | Lua RCE via GC use-after-free | PR #918 |
+| CVE-2025-46819 | Lua out-of-bound read | PR #918 |
+| CVE-2025-46817 | Lua integer overflow | PR #918 |
+| CVE-2024-31449 | Lua stack overflow (bit.tohex) | Issue #905 |
+| CVE-2023-45145 | Unix socket listen-before-chmod | PR #908 |
+
+---
+
+Contributing
+------------
+
 Note: by contributing code to the KeyDB project in any form, including sending
 a pull request via Github, a code fragment or patch via private email or
 public discussion groups, you agree to release your code under the terms

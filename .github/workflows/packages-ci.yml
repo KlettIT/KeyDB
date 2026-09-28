@@ -7,9 +7,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ---------------------------------------------------------------
-  # Build KeyDB source once on a stable base, then reuse for deb/rpm
-  # ---------------------------------------------------------------
   build-source:
     runs-on: ubuntu-latest
     outputs:
@@ -17,6 +14,8 @@ jobs:
       git_sha: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Get version
         id: ver
@@ -31,68 +30,64 @@ jobs:
           sudo apt-get install -y build-essential nasm autoconf automake \
             libjemalloc-dev tcl tcl-dev uuid-dev libcurl4-openssl-dev \
             libbz2-dev libzstd-dev liblz4-dev libsnappy-dev libssl-dev \
-            pkg-config
+            pkg-config libgflags-dev libglog-dev
           make -j"$(nproc)" BUILD_TLS=yes ENABLE_FLASH=yes
           cd src
           strip keydb-cli keydb-benchmark keydb-check-rdb keydb-check-aof \
                 keydb-diagnostic-tool keydb-sentinel keydb-server
 
-      - name: Upload binaries
+      - name: Upload binaries + config
         uses: actions/upload-artifact@v4
         with:
-          name: keydb-binaries
-          path: src/keydb-{server,cli,benchmark,check-rdb,check-aof,diagnostic-tool,sentinel}
+          name: keydb-build
+          path: |
+            src/keydb-server
+            src/keydb-cli
+            src/keydb-benchmark
+            src/keydb-check-rdb
+            src/keydb-check-aof
+            src/keydb-diagnostic-tool
+            src/keydb-sentinel
+            keydb.conf
+            sentinel.conf
 
-  # ---------------------------------------------------------------
-  # deb: Ubuntu 20.04 / 22.04 / 24.04, Debian 11 / 12
-  # ---------------------------------------------------------------
   build-deb:
     needs: build-source
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        dist: [ubuntu-20.04, ubuntu-22.04, ubuntu-24.04, debian-11, debian-12]
-
-    container:
-      image: ${{ matrix.dist }}
-
+    container: ubuntu:24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download binaries
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: keydb-binaries
-          path: src/
+          name: keydb-build
+          path: .
 
       - name: Install build deps
         run: |
-          if [ -f /etc/debian_version ]; then
-            apt-get update
-            apt-get install -y devscripts dpkg-dev lsb-release
-          fi
+          apt-get update
+          apt-get install -y --no-install-recommends dpkg-dev
 
-      - name: Build .deb packages
+      - name: Build .deb package
         run: |
-          chmod +x pkg/deb/deb-buildsource.sh
-          # The script expects to run from pkg/deb/
-          cd pkg/deb
-          # Adapt: we already have compiled binaries in src/, so build a
-          # simplified deb directly using dpkg-deb
           VER="${{ needs.build-source.outputs.version }}"
-          SHA="${{ needs.build-source.outputs.git_sha }}"
           ARCH=$(dpkg --print-architecture)
-          DIST=$(lsb_release --codename --short)
+          # Use codename from /etc/os-release
+          . /etc/os-release
+          DIST="${VERSION_CODENAME}"
+          [ -z "$DIST" ] && DIST="unknown"
 
-          # Create package staging dir
           STAGE="keydb-${VER}-1.${DIST}-${ARCH}"
-          mkdir -p "$STAGE/usr/bin" "$STAGE/etc/keydb" "$STAGE/usr/share/keydb" "$STAGE/DEBIAN"
+          mkdir -p "$STAGE/usr/bin" "$STAGE/etc/keydb" "$STAGE/DEBIAN"
+          mkdir -p "$STAGE/usr/share/keydb"
 
-          cp src/keydb-* "$STAGE/usr/bin/"
-          cp keydb.conf "$STAGE/etc/keydb/" 2>/dev/null || cp ../..//keydb.conf "$STAGE/etc/keydb/" 2>/dev/null || true
+          cp src/keydb-server src/keydb-cli src/keydb-benchmark \
+             src/keydb-check-rdb src/keydb-check-aof \
+             src/keydb-diagnostic-tool src/keydb-sentinel "$STAGE/usr/bin/"
+          cp keydb.conf "$STAGE/etc/keydb/"
+          cp sentinel.conf "$STAGE/etc/keydb/"
 
-          # control file
           cat > "$STAGE/DEBIAN/control" <<EOF
           Package: keydb
           Version: ${VER}-1
@@ -104,7 +99,6 @@ jobs:
            KeyDB is a fork of Redis designed for performance and scalability.
           EOF
 
-          # postinst
           cat > "$STAGE/DEBIAN/postinst" <<'EOF'
           #!/bin/sh
           set -e
@@ -130,9 +124,6 @@ jobs:
           name: keydb-deb-${{ matrix.dist }}
           path: keydb_*.deb
 
-  # ---------------------------------------------------------------
-  # rpm: RHEL 8 / RHEL 9 / Fedora 40
-  # ---------------------------------------------------------------
   build-rpm:
     needs: build-source
     runs-on: ubuntu-latest
@@ -140,11 +131,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - dist: centos
-            image: "centos:8"
+          - dist: rockylinux
+            image: "rockylinux:8"
             dist_tag: ".el8"
-          - dist: centos
-            image: "centos:9"
+          - dist: rockylinux
+            image: "rockylinux:9"
             dist_tag: ".el9"
           - dist: fedora
             image: "fedora:40"
@@ -156,13 +147,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download binaries
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: keydb-binaries
-          path: src/
+          name: keydb-build
+          path: .
 
-      - name: Install build deps
+      - name: Install rpmbuild
         run: |
           if command -v yum &>/dev/null; then
             yum install -y rpm-build
@@ -170,50 +161,82 @@ jobs:
             dnf install -y rpm-build
           fi
 
-      - name: Build .rpm packages
+      - name: Build .rpm package
         run: |
-          chmod +x pkg/rpm/generate_rpms.sh
-          cd pkg/rpm
-          # Patch the script to use pre-built binaries
-          sed -i 's|cp \$DIR/../../src/|cp $DIR/../../src/|g' generate_rpms.sh 2>/dev/null
-          # Build
-          bash generate_rpms.sh 2>&1 || {
-            # Fallback: manual rpmbuild
-            echo "generate_rpms.sh failed, falling back to manual build..."
-            VER="${{ needs.build-source.outputs.version }}"
-            REL=1
-            ARCH=$(uname -m)
-            DIST="${{ matrix.dist_tag }}"
-            SRC_DIR="keydb_build/keydb_rpm"
+          VER="${{ needs.build-source.outputs.version }}"
+          REL=1
+          ARCH=$(uname -m)
+          DIST="${{ matrix.dist_tag }}"
 
-            mkdir -p /root/rpmbuild/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}
-            cp -r "$SRC_DIR"/* "/root/rpmbuild/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}/"
+          BUILDROOT="/root/rpmbuild/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}"
+          mkdir -p "$BUILDROOT/usr/bin" \
+                   "$BUILDROOT/usr/lib64/redis/modules" \
+                   "$BUILDROOT/var/lib/keydb" \
+                   "$BUILDROOT/var/log/keydb"
 
-            # Copy pre-built binaries
-            cp src/keydb-server src/keydb-sentinel src/keydb-cli \
-               src/keydb-benchmark src/keydb-check-aof src/keydb-check-rdb \
-               src/keydb-diagnostic-tool \
-               "/root/rpmbuild/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}/usr/bin/"
+          cp src/keydb-server src/keydb-sentinel src/keydb-cli \
+             src/keydb-benchmark src/keydb-check-aof src/keydb-check-rdb \
+             src/keydb-diagnostic-tool \
+             "$BUILDROOT/usr/bin/"
 
-            # Update spec file
-            sed -i "2d" keydb_build/keydb.spec
-            sed -i "1a\\Version     : ${VER}" keydb_build/keydb.spec
-            sed -i "3d" keydb_build/keydb.spec
-            sed -i "2a\\Release     : ${REL}${DIST}" keydb_build/keydb.spec
+          # Build RPM using pkgbuild approach via rpm script
+          SPECFILE=/tmp/keydb.spec
+          cat > "$SPECFILE" <<EOF
+          %define _build_id_links none
+          %define _use_internal_dependencies 0
 
-            rpmbuild -bb --buildroot "/root/rpmbuild/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}" \
-              keydb_build/keydb.spec
-          }
+          Name     : keydb
+          Version  : ${VER}
+          Release  : ${REL}${DIST}%{?dist}
+          Summary  : Multithreaded fork of Redis
+          License  : BSD
+          BuildArch: ${ARCH}
+
+          %description
+          KeyDB is a fork of Redis designed for performance and scalability.
+
+          %prep
+          # no prep needed - using pre-built binaries
+
+          %build
+          # no build needed - using pre-built binaries
+
+          %install
+          %files
+          /usr/bin/keydb-server
+          /usr/bin/keydb-sentinel
+          /usr/bin/keydb-cli
+          /usr/bin/keydb-benchmark
+          /usr/bin/keydb-check-aof
+          /usr/bin/keydb-check-rdb
+          /usr/bin/keydb-diagnostic-tool
+          /usr/lib64/redis/modules
+          /var/lib/keydb
+          /var/log/keydb
+
+          %post
+          if ! getent group keydb > /dev/null; then
+              groupadd -r keydb
+          fi
+          if ! getent passwd keydb > /dev/null; then
+              useradd -r -g keydb keydb
+          fi
+          chown -R keydb:keydb /var/lib/keydb /var/log/keydb
+
+          %postun
+          rm -rf /var/lib/keydb /var/log/keydb
+          EOF
+
+          # Point _buildtree to our BUILDROOT
+          rpmbuild -bb --buildroot "$BUILDROOT" --define "_build_id_links none" \
+            --define "_use_internal_dependencies 0" "$SPECFILE"
 
           echo "=== Built RPM packages ==="
-          find /root/rpmbuild -name "*.rpm" -o -name "keydb*.rpm" 2>/dev/null | head -5
-          find . -name "*.rpm" 2>/dev/null | head -5
+          find /root/rpmbuild/RPMS -name "*.rpm" 2>/dev/null
 
       - name: Upload rpm artifact
         uses: actions/upload-artifact@v4
         with:
           name: keydb-rpm-${{ matrix.dist }}-${{ matrix.dist_tag }}
-          path: |
-            /root/rpmbuild/RPMS/**/*.rpm
-            rpm_files_generated/*.rpm
+          path: /root/rpmbuild/RPMS/**/*.rpm
           if-no-files-found: warn

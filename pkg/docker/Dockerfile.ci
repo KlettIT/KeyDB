@@ -1,82 +1,98 @@
-# CI Dockerfile - builds from pre-compiled source tree (faster than building in-container)
+# CI Dockerfile - builds KeyDB from source inside the container.
+# Used by .github/workflows/docker-ci.yml for multi-arch builds.
 FROM ubuntu:22.04
 SHELL ["/bin/bash","-c"]
 
-# Create keydb user
+# --- keydb user ---
 RUN groupadd -r keydb && useradd -r -g keydb keydb
 
-# gosu for step-down from root
-ENV GOSU_VERSION 1.14
+# --- gosu (step-down from root) ---
+ENV GOSU_VERSION=1.14
 RUN set -eux; \
-        dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
-        wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch"; \
-        wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc"; \
-        export GNUPGHOME="$(mktemp -d)"; \
-        gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
-        gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
-        gpgconf --kill all; \
-        rm -rf "$GNUPGHOME" /usr/local/bin/gosu.asc; \
-        chmod +x /usr/local/bin/gosu; \
-        gosu --version; \
-        gosu nobody true
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates wget gnupg; \
+    rm -rf /var/lib/apt/lists/*; \
+    dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
+    wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-${dpkgArch}"; \
+    wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-${dpkgArch}.asc"; \
+    export GNUPGHOME="$(mktemp -d)"; \
+    gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
+    gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
+    gpgconf --kill all; \
+    rm -rf "$GNUPGHOME" /usr/local/bin/gosu.asc; \
+    chmod +x /usr/local/bin/gosu; \
+    gosu --version; \
+    gosu nobody true
 
-# Runtime dependencies for KeyDB binaries
+# --- build dependencies (including RocksDB transitive deps) ---
 RUN set -eux; \
-        apt-get update; \
-        apt-get install -y --no-install-recommends \
-                ca-certificates \
-                libjemalloc2 \
-                libssl3 \
-                libcurl4 \
-                liblz4-1 \
-                libsnappy1v5 \
-                libzstd1 \
-                libbz2-1.0 \
-                zlib1g; \
-        rm -rf /var/lib/apt/lists/*
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -qqy --no-install-recommends \
+        build-essential nasm autotools-dev autoconf make \
+        libjemalloc-dev tcl tcl-dev uuid-dev \
+        libcurl4-openssl-dev libbz2-dev libzstd-dev liblz4-dev \
+        libsnappy-dev libssl-dev pkg-config git \
+        libgflags-dev libglog-dev \
+        zlib1g-dev; \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy pre-built binaries from build context (src/ dir contains the compiled binaries)
-COPY src/keydb-server src/keydb-cli src/keydb-benchmark \
-     src/keydb-check-rdb src/keydb-check-aof \
-     src/keydb-diagnostic-tool src/keydb-sentinel /usr/local/bin/
-COPY keydb.conf /etc/keydb/
-COPY sentinel.conf /etc/keydb/ 2>/dev/null || true
-
-RUN cd /usr/local/bin; \
-        ln -s keydb-cli redis-cli
-
-# Create data directories
-RUN mkdir -p /data /flash /etc/keydb && \
-        chown keydb:keydb /data /flash && \
-        # Disable protected mode and daemonize for container use
-        sed -i 's/^protected-mode.*/protected-mode no/' /etc/keydb/keydb.conf; \
-        sed -i 's/^daemonize.*/# &/' /etc/keydb/keydb.conf; \
-        sed -i 's/^dir.*/dir \/data/' /etc/keydb/keydb.conf; \
-        sed -i 's/^logfile.*/# &/' /etc/keydb/keydb.conf; \
-        sed -i 's/^bind.*/# &/' /etc/keydb/keydb.conf
-
-# symlinks for redis compatibility
-RUN cd /etc/keydb; \
-        ln -s keydb.conf redis.conf; \
-        cd /usr/local/bin; \
-        ln -s keydb-sentinel redis-sentinel
-
-# Generate entrypoint script
+# --- build KeyDB from source ---
+WORKDIR /build
+COPY . /build
 RUN set -eux; \
-        echo '#!/bin/sh' > /usr/local/bin/docker-entrypoint.sh; \
-        echo 'set -e' >> /usr/local/bin/docker-entrypoint.sh; \
-        echo "if [ \"\${1#-}\" != \"\$1\" ] || [ \"\${1%.conf}\" != \"\$1\" ]; then" >> /usr/local/bin/docker-entrypoint.sh; \
-        echo "        set -- keydb-server \"\$@\"" >> /usr/local/bin/docker-entrypoint.sh; \
-        echo "fi" >> /usr/local/bin/docker-entrypoint.sh; \
-        echo 'if [ -n "$KEYDB_PASSWORD" ]; then' >> /usr/local/bin/docker-entrypoint.sh; \
-        echo '        set -- "$@" --requirepass "${KEYDB_PASSWORD}"' >> /usr/local/bin/docker-entrypoint.sh; \
-        echo 'fi' >> /usr/local/bin/docker-entrypoint.sh; \
-        echo 'if [ "$1" = "keydb-server" -a "$(id -u)" = "0" ]; then' >> /usr/local/bin/docker-entrypoint.sh; \
-        echo "        find . \\! -user keydb -exec chown keydb '{}' +" >> /usr/local/bin/docker-entrypoint.sh; \
-        echo '        exec gosu keydb "$0" "$@"' >> /usr/local/bin/docker-entrypoint.sh; \
-        echo 'fi' >> /usr/local/bin/docker-entrypoint.sh; \
-        echo 'exec "$@"' >> /usr/local/bin/docker-entrypoint.sh; \
-        chmod +x /usr/local/bin/docker-entrypoint.sh
+    # Disable protected-mode by default (container-friendly)
+    sed -ri 's!^( *createBoolConfig[(]"protected-mode",.*, *)1( *,.*[)],)$!\10\2!' ./src/config.cpp; \
+    make -j$(nproc) BUILD_TLS=yes ENABLE_FLASH=yes; \
+    cd src; \
+    strip keydb-cli keydb-benchmark keydb-check-rdb keydb-check-aof \
+          keydb-diagnostic-tool keydb-sentinel keydb-server; \
+    mv keydb-server keydb-cli keydb-benchmark \
+       keydb-check-rdb keydb-check-aof \
+       keydb-diagnostic-tool keydb-sentinel /usr/local/bin/; \
+    cd /usr/local/bin; \
+    ln -s keydb-cli redis-cli; \
+    ln -s keydb-sentinel redis-sentinel
+
+# --- runtime config ---
+RUN mkdir -p /data /flash /etc/keydb; \
+    chown keydb:keydb /data /flash; \
+    cp /build/keydb.conf /etc/keydb/; \
+    cp /build/sentinel.conf /etc/keydb/; \
+    sed -i 's/^protected-mode.*/protected-mode no/' /etc/keydb/keydb.conf; \
+    sed -i 's/^daemonize.*/# &/' /etc/keydb/keydb.conf; \
+    sed -i 's/^dir.*/dir \/data/' /etc/keydb/keydb.conf; \
+    sed -i 's/^logfile.*/# &/' /etc/keydb/keydb.conf; \
+    sed -i 's/^bind.*/# &/' /etc/keydb/keydb.conf; \
+    cd /etc/keydb; \
+    ln -s keydb.conf redis.conf
+
+# --- entrypoint script ---
+RUN set -eux; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'set -e' \
+        '# prepend keydb-server if not provided as first argument' \
+        'if [ "${1#-}" != "$1" ] || [ "${1%.conf}" != "$1" ]; then' \
+        '    set -- keydb-server "$@"' \
+        'fi' \
+        '# inject requirepass if KEYDB_PASSWORD is set' \
+        'if [ -n "$KEYDB_PASSWORD" ]; then' \
+        '    set -- "$@" --requirepass "${KEYDB_PASSWORD}"' \
+        'fi' \
+        '# allow container to be started with --user' \
+        'if [ "$1" = "keydb-server" -a "$(id -u)" = "0" ]; then' \
+        '    find . ! -user keydb -exec chown keydb "{}" +' \
+        '    exec gosu keydb "$0" "$@"' \
+        'fi' \
+        'exec "$@"' \
+        > /usr/local/bin/docker-entrypoint.sh; \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# --- cleanup ---
+RUN rm -rf /build; \
+    apt-get autoremove -y --purge; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /tmp/*
 
 VOLUME /data
 WORKDIR /data
