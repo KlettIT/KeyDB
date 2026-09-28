@@ -32,7 +32,7 @@ RUN set -eux; \
         libjemalloc-dev tcl tcl-dev uuid-dev \
         libcurl4-openssl-dev libbz2-dev libzstd-dev liblz4-dev \
         libsnappy-dev libssl-dev pkg-config git \
-        libgflags-dev libglog-dev \
+        libgflags-dev libgoogle-glog-dev \
         zlib1g-dev; \
     rm -rf /var/lib/apt/lists/*
 

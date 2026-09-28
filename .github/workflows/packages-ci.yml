@@ -30,7 +30,7 @@ jobs:
           sudo apt-get install -y build-essential nasm autoconf automake \
             libjemalloc-dev tcl tcl-dev uuid-dev libcurl4-openssl-dev \
             libbz2-dev libzstd-dev liblz4-dev libsnappy-dev libssl-dev \
-            pkg-config libgflags-dev libglog-dev
+            pkg-config libgflags-dev libgoogle-glog-dev
           make -j"$(nproc)" BUILD_TLS=yes ENABLE_FLASH=yes
           cd src
           strip keydb-cli keydb-benchmark keydb-check-rdb keydb-check-aof \
