@@ -14,10 +14,10 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
       git_sha: ${{ github.sha }}
     steps:
-      - name: Install Git
+      - name: Install Git + CA certs
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git
+          apt-get install -y --no-install-recommends git ca-certificates
 
       - uses: actions/checkout@v4
         with:
