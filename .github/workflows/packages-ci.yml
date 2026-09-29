@@ -128,13 +128,13 @@ jobs:
 
           dpkg-deb --build "$STAGE"
           echo "=== Built package ==="
-          ls -lh keydb_${VER}-1_${ARCH}.deb
+          ls -lh keydb-*.deb
 
       - name: Upload deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: keydb-deb-${{ matrix.dist }}
-          path: keydb_*.deb
+          path: keydb-*.deb
 
   build-rpm:
     needs: build-source
@@ -179,19 +179,10 @@ jobs:
           REL=1
           ARCH=$(uname -m)
           DIST="${{ matrix.dist_tag }}"
+          WS="$(pwd)"
 
           BUILDROOT="/root/rpmbuild/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}"
-          mkdir -p "$BUILDROOT/usr/bin" \
-                   "$BUILDROOT/usr/lib64/redis/modules" \
-                   "$BUILDROOT/var/lib/keydb" \
-                   "$BUILDROOT/var/log/keydb"
 
-          cp src/keydb-server src/keydb-sentinel src/keydb-cli \
-             src/keydb-benchmark src/keydb-check-aof src/keydb-check-rdb \
-             src/keydb-diagnostic-tool \
-             "$BUILDROOT/usr/bin/"
-
-          # Build RPM using pkgbuild approach via rpm script
           SPECFILE=/tmp/keydb.spec
           cat > "$SPECFILE" <<EOF
           %define _build_id_links none
@@ -214,6 +205,21 @@ jobs:
           # no build needed - using pre-built binaries
 
           %install
+          rm -rf %{buildroot}
+          mkdir -p %{buildroot}/usr/bin \
+                   %{buildroot}/usr/lib64/redis/modules \
+                   %{buildroot}/var/lib/keydb \
+                   %{buildroot}/var/log/keydb
+
+          cp ${WS}/src/keydb-server \
+             ${WS}/src/keydb-sentinel \
+             ${WS}/src/keydb-cli \
+             ${WS}/src/keydb-benchmark \
+             ${WS}/src/keydb-check-aof \
+             ${WS}/src/keydb-check-rdb \
+             ${WS}/src/keydb-diagnostic-tool \
+             %{buildroot}/usr/bin/
+
           %files
           /usr/bin/keydb-server
           /usr/bin/keydb-sentinel
@@ -239,9 +245,7 @@ jobs:
           rm -rf /var/lib/keydb /var/log/keydb
           EOF
 
-          # Point _buildtree to our BUILDROOT
-          rpmbuild -bb --buildroot "$BUILDROOT" --define "_build_id_links none" \
-            --define "_use_internal_dependencies 0" "$SPECFILE"
+          rpmbuild -bb --buildroot "$BUILDROOT" "$SPECFILE"
 
           echo "=== Built RPM packages ==="
           find /root/rpmbuild/RPMS -name "*.rpm" 2>/dev/null
