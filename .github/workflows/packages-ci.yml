@@ -181,7 +181,9 @@ jobs:
           DIST="${{ matrix.dist_tag }}"
           WS="$(pwd)"
 
-          BUILDROOT="/root/rpmbuild/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}"
+          RPM_TOPDIR="/root/rpmbuild"
+          mkdir -p "$RPM_TOPDIR"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+          BUILDROOT="$RPM_TOPDIR/BUILDROOT/keydb-${VER}-${REL}${DIST}.${ARCH}"
 
           SPECFILE=/tmp/keydb.spec
           cat > "$SPECFILE" <<EOF
@@ -245,10 +247,10 @@ jobs:
           rm -rf /var/lib/keydb /var/log/keydb
           EOF
 
-          rpmbuild -bb --buildroot "$BUILDROOT" "$SPECFILE"
+          rpmbuild -bb --define "_topdir $RPM_TOPDIR" --buildroot "$BUILDROOT" "$SPECFILE"
 
           echo "=== Built RPM packages ==="
-          find /root/rpmbuild/RPMS -name "*.rpm" 2>/dev/null
+          find "$RPM_TOPDIR/RPMS" -name "*.rpm" 2>/dev/null
 
       - name: Upload rpm artifact
         uses: actions/upload-artifact@v4
@@ -256,3 +258,4 @@ jobs:
           name: keydb-rpm-${{ matrix.dist }}-${{ matrix.dist_tag }}
           path: /root/rpmbuild/RPMS/**/*.rpm
           if-no-files-found: warn
+
